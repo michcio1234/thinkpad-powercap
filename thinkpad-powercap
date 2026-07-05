@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/thinkpad-powercap
+# Manage the RAPL package power cap defined in /etc/thinkpad-powercap.conf.
+#   thinkpad-powercap apply     apply the cap from the config (boot/resume)
+#   thinkpad-powercap restore   write the saved factory defaults back
+#   thinkpad-powercap status    print current caps and state (read-only)
+#   thinkpad-powercap           show usage
+set -u
+
+CONF=/etc/thinkpad-powercap.conf
+DEFAULTS=/etc/thinkpad-powercap.defaults
+MSR=/sys/class/powercap/intel-rapl:0
+MMIO=/sys/class/powercap/intel-rapl-mmio:0
+PL1=$MSR/constraint_0_power_limit_uw   # sustained (long_term)
+PL2=$MSR/constraint_1_power_limit_uw   # short burst (short_term)
+
+# Factory defaults are captured once at install time so we can always undo.
+DEF_PL1_UW=64000000
+DEF_PL2_UW=64000000
+[ -r "$DEFAULTS" ] && . "$DEFAULTS"
+
+usage() {
+    cat <<EOF
+Usage: thinkpad-powercap {apply|restore|status}
+  apply     apply the cap from $CONF (used by the systemd unit at boot/resume)
+  restore   write the saved factory limits back
+  status    print current caps and state (read-only, no root needed)
+Edit $CONF then: sudo systemctl restart thinkpad-powercap
+EOF
+}
+
+cmd_apply() {
+    [ -w "$PL1" ] || { echo "thinkpad-powercap: $PL1 not writable (need root)" >&2; exit 1; }
+    local CAP_WATTS=22 CAP_PL2=yes
+    [ -r "$CONF" ] && . "$CONF"
+    local UW=$((CAP_WATTS * 1000000))
+    echo "$UW" > "$PL1"
+    case "${CAP_PL2,,}" in
+        yes|true|1) [ -w "$PL2" ] && echo "$UW" > "$PL2" ;;
+        *)          [ -w "$PL2" ] && echo "$DEF_PL2_UW" > "$PL2" ;;  # leave PL2 at factory
+    esac
+    logger -t thinkpad-powercap "applied PL1=${CAP_WATTS}W CAP_PL2=${CAP_PL2}"
+}
+
+cmd_restore() {
+    [ -w "$PL1" ] || { echo "thinkpad-powercap: $PL1 not writable (need root)" >&2; exit 1; }
+    echo "$DEF_PL1_UW" > "$PL1"
+    [ -w "$PL2" ] && echo "$DEF_PL2_UW" > "$PL2"
+    logger -t thinkpad-powercap "restored factory PL1/PL2"
+}
+
+cmd_status() {
+    local w uw
+    w()  { [ -r "$1" ] && echo "$(( $(cat "$1") / 1000000 ))W" || echo "n/a"; }
+    uw() { [ -r "$1" ] && cat "$1" || echo ""; }
+
+    echo "== ThinkPad power caps =="
+    echo "platform_profile : $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo n/a)"
+    echo
+    echo "APPLIED (MSR, what actually limits the CPU):"
+    echo "  PL1 sustained  : $(w "$PL1")  (window $(( $(uw "$MSR/constraint_0_time_window_us" 2>/dev/null || echo 0) / 1000000 ))s)"
+    printf "  PL2 burst      : %s  (window %sus)\n" "$(w "$PL2")" "$(uw "$MSR/constraint_1_time_window_us")"
+    echo "  nominal TDP    : $(w "$MSR/constraint_0_max_power_uw")"
+    echo
+    echo "FIRMWARE (MMIO, DYTC-managed - not set by this tool; a drop to ~10-12W = active thermal cut):"
+    echo "  PL1 sustained  : $(w "$MMIO/constraint_0_power_limit_uw")"
+    echo "  PL2 burst      : $(w "$MMIO/constraint_1_power_limit_uw")"
+    echo
+
+    local CAP_WATTS="" CAP_PL2=""
+    [ -r "$CONF" ] && . "$CONF"
+    if [ -r "$CONF" ]; then
+        echo "CONFIG ($CONF): CAP_WATTS=${CAP_WATTS:-?}  CAP_PL2=${CAP_PL2:-?}"
+    else
+        echo "CONFIG: not installed ($CONF absent)"
+    fi
+    echo "SAVED DEFAULTS: PL1=$(( DEF_PL1_UW / 1000000 ))W  PL2=$(( DEF_PL2_UW / 1000000 ))W"
+
+    if command -v systemctl >/dev/null; then
+        echo "SERVICE: $(systemctl is-enabled thinkpad-powercap 2>/dev/null || echo not-installed) / $(systemctl is-active thinkpad-powercap 2>/dev/null || echo inactive)"
+    fi
+
+    if [ -n "$CAP_WATTS" ]; then
+        local want=$((CAP_WATTS * 1000000)) ok="yes"
+        [ "$(uw "$PL1")" = "$want" ] || ok="no (PL1 differs)"
+        case "${CAP_PL2,,}" in
+            yes|true|1) [ "$(uw "$PL2")" = "$want" ] || ok="no (PL2 not capped)" ;;
+        esac
+        echo "APPLIED MATCHES CONFIG: $ok"
+    fi
+}
+
+case "${1:-}" in
+    apply)          cmd_apply ;;
+    restore)        cmd_restore ;;
+    status)         cmd_status ;;
+    ""|-h|--help|help) usage ;;
+    *)              echo "thinkpad-powercap: unknown command '$1'" >&2; usage >&2; exit 2 ;;
+esac

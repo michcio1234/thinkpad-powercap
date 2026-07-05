@@ -1,0 +1,14 @@
+[Unit]
+Description=ThinkPad RAPL package power cap (prevents DYTC thermal power-cut stutter)
+# RAPL sysfs must exist first.
+After=multi-user.target
+ConditionPathIsReadWrite=/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/thinkpad-powercap apply
+# Keep the unit "active" after the oneshot so `systemctl status` reads sensibly.
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

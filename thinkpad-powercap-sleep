@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# /usr/lib/systemd/system-sleep/thinkpad-powercap
+# systemd-sleep calls this with:  $1 = pre|post , $2 = suspend|hibernate|...
+# The firmware resets RAPL limits on wake, so re-apply the cap on resume (post).
+[ "$1" = "post" ] && /usr/local/sbin/thinkpad-powercap apply
+exit 0
