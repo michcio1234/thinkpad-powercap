@@ -130,3 +130,7 @@ sudo bash verify_cap.sh 26 120       # loads all cores, logs temp/power, prints 
 Watch for a live DYTC cut with `thinkpad-powercap status`: if the **MMIO PL1**
 line drops to ~10–12 W under load, the die hit the trigger and the cap is too
 high.
+
+## License
+
+Released into the public domain under [The Unlicense](LICENSE).
